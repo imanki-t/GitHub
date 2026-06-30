@@ -1,6 +1,5 @@
 import express from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { Octokit } from '@octokit/rest';
 import { z } from 'zod';
 import dotenv from 'dotenv';
@@ -11,6 +10,9 @@ const DEFAULT_GITHUB_PAT = process.env.GITHUB_PERSONAL_ACCESS_TOKEN || process.e
 if (!DEFAULT_GITHUB_PAT) {
   console.warn("⚠️ Warning: GITHUB_PAT/GITHUB_PERSONAL_ACCESS_TOKEN env variable is missing.");
 }
+
+// Baseline global client matching default token configurations
+const globalOctokit = new Octokit({ auth: DEFAULT_GITHUB_PAT });
 
 // Response Format Helpers
 const formatSuccess = (data: any) => ({
@@ -201,42 +203,41 @@ function createMcpServer(octokitClient: Octokit) {
 }
 
 // ============================================================================
-// 🔌 STREAMABLE HTTP / SSE ENGINE FOR ALPIC
+// 🔌 PURE STATELESS STREAMABLE HTTP ENGINE FOR ALPIC
 // ============================================================================
 const app = express();
 app.use(express.json());
 
-const activeTransports = new Map<string, SSEServerTransport>();
-
+// Main handler matching the /mcp endpoint route
 app.post('/mcp', async (req, res) => {
-  const sessionId = Math.random().toString(36).substring(7);
-  const transport = new SSEServerTransport(`/messages?id=${sessionId}`, res);
-  activeTransports.set(sessionId, transport);
-  
-  req.on('close', () => { activeTransports.delete(sessionId); });
-  
-  // Custom multi-user support override handling
-  const customPat = req.headers['x-github-token'] as string;
-  const activeToken = customPat || DEFAULT_GITHUB_PAT;
-  const activeOctokit = new Octokit({ auth: activeToken });
+  try {
+    // Custom multi-user support override headers parsing
+    const customPat = req.headers['x-github-token'] as string;
+    const activeToken = customPat || DEFAULT_GITHUB_PAT;
+    const activeOctokit = new Octokit({ auth: activeToken });
 
-  // Instantiate server with correct token binding scope
-  const activeServer = createMcpServer(activeOctokit);
-  await activeServer.connect(transport);
+    // Initialize the server scoped to this specific connection token context
+    const activeServer = createMcpServer(activeOctokit);
+
+    // Process the JSON-RPC message statelessly and instantly reply to the request response channel
+    const response = await activeServer.handleMessage(req.body);
+    res.json(response);
+  } catch (error: any) {
+    res.status(500).json({
+      jsonrpc: '2.0',
+      error: { code: -32603, message: error?.message || 'Internal MCP Engine Error' },
+      id: req.body?.id || null
+    });
+  }
 });
 
-app.post('/messages', async (req, res) => {
-  const sessionId = req.query.id as string;
-  const transport = activeTransports.get(sessionId);
-  
-  if (transport) {
-    await transport.handlePostMessage(req, res);
-  } else {
-    res.status(404).send('Session expired.');
-  }
+// Root routing helper to handle quick system validation checks
+app.get('/', (req, res) => {
+  res.send('🚀 Stateless GitHub MCP Server is active and operational.');
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Lean GitHub MCP Server operational on port ${PORT}`);
+  console.log(`🚀 Stateless Lean GitHub MCP Server operational on port ${PORT}`);
 });
+      
