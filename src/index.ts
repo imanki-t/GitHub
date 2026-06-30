@@ -11,9 +11,6 @@ if (!DEFAULT_GITHUB_PAT) {
   console.warn("⚠️ Warning: GITHUB_PAT/GITHUB_PERSONAL_ACCESS_TOKEN env variable is missing.");
 }
 
-// Baseline global client matching default token configurations
-const globalOctokit = new Octokit({ auth: DEFAULT_GITHUB_PAT });
-
 // Response Format Helpers
 const formatSuccess = (data: any) => ({
   content: [{ type: 'text' as const, text: typeof data === 'string' ? data : JSON.stringify(data, null, 2) }]
@@ -183,19 +180,47 @@ function createMcpServer(octokitClient: Octokit) {
   });
 
   /**
-   * 9. GET COMMIT STATUS
+   * 9. PATCH FILE CONTENTS (Line-Specific Targeting Optimization)
    */
-  server.registerTool('get_commit_status', {
-    description: 'Look up live CI/CD and checking statuses for a specific reference pointer',
+  server.registerTool('patch_file_contents', {
+    description: 'Surgically update specific lines in a file by replacing a targeted row block without rewriting the whole file.',
     inputSchema: {
-      owner: z.string(), 
-      repo: z.string(), 
-      ref: z.string()
+      owner: z.string(),
+      repo: z.string(),
+      path: z.string(),
+      branch: z.string(),
+      startLine: z.number().describe('The 1-indexed starting line number of the block to replace'),
+      endLine: z.number().describe('The 1-indexed ending line number of the block to replace'),
+      newContent: z.string().describe('The replacement string block containing the clean updated code'),
+      message: z.string().describe('Descriptive commit message summary')
     }
-  }, async ({ owner, repo, ref }) => {
+  }, async ({ owner, repo, path, branch, startLine, endLine, newContent, message }) => {
     try {
-      const res = await octokitClient.repos.getCombinedStatusForRef({ owner, repo, ref });
-      return formatSuccess({ state: res.data.state, statuses: res.data.statuses.map(s => ({ context: s.context, state: s.state })) });
+      const fileData = await octokitClient.repos.getContent({ owner, repo, path, ref: branch });
+      if (Array.isArray(fileData.data) || !('content' in fileData.data)) {
+        throw new Error('Target path is not a valid code file.');
+      }
+      
+      const fileSha = fileData.data.sha;
+      const rawText = Buffer.from(fileData.data.content, 'base64').toString('utf-8');
+      const lines = rawText.split('\n');
+      
+      const zeroIndexedStart = startLine - 1;
+      const zeroIndexedEnd = endLine;
+      
+      if (zeroIndexedStart < 0 || zeroIndexedEnd > lines.length || zeroIndexedStart > zeroIndexedEnd) {
+        throw new Error(`Invalid line range bounds. The target file currently has ${lines.length} total lines.`);
+      }
+
+      const replacementLines = newContent.split('\n');
+      lines.splice(zeroIndexedStart, zeroIndexedEnd - zeroIndexedStart, ...replacementLines);
+      const updatedText = lines.join('\n');
+
+      const res = await octokitClient.repos.createOrUpdateFileContents({
+        owner, repo, path, message, content: Buffer.from(updatedText).toString('base64'), branch, sha: fileSha
+      });
+
+      return formatSuccess(`Line patch successfully committed to lines ${startLine}-${endLine}. New SHA: ${res.data.commit.sha}`);
     } catch (err) { return formatError(err); }
   });
 
@@ -203,9 +228,9 @@ function createMcpServer(octokitClient: Octokit) {
 }
 
 // ============================================================================
-// 🔌 PURE STATELESS STREAMABLE HTTP ENGINE FOR ALPIC
+// 🔌 PURE STATELESS STREAMABLE HTTP ENGINE (In-Memory Transport Pattern)
 // ============================================================================
-const app = express();
+const app = reportExpress => express();
 app.use(express.json());
 
 app.post('/mcp', async (req, res) => {
@@ -216,24 +241,44 @@ app.post('/mcp', async (req, res) => {
 
     const activeServer = createMcpServer(activeOctokit);
 
-    // FIXED: Target the internal protocol router subclass instance (.server)
-    const response = await activeServer.server.handleMessage(req.body);
-    res.json(response);
+    let responsePayload: any = null;
+
+    // Build a compliant in-memory transport implementation object
+    const transport = {
+      start: async () => {},
+      send: async (message: any) => {
+        responsePayload = message;
+      },
+      close: async () => {},
+      onclose: undefined as (() => void) | undefined,
+      onerror: undefined as ((error: Error) => void) | undefined,
+      onmessage: undefined as ((message: any) => Promise<void>) | undefined,
+    };
+
+    // Establish the transport coupling line
+    await activeServer.connect(transport);
+
+    // Explicitly pass the body data to the registered listener hook
+    if (typeof transport.onmessage === 'function') {
+      await transport.onmessage(req.body);
+    }
+
+    res.json(responsePayload);
   } catch (error: any) {
     res.status(500).json({
       jsonrpc: '2.0',
-      error: { code: -32603, message: error?.message || 'Internal MCP Engine Error' },
+      error: { code: -32603, message: error?.message || 'Internal MCP Handler Crash' },
       id: req.body?.id || null
     });
   }
 });
 
 app.get('/', (req, res) => {
-  res.send('🚀 Stateless GitHub MCP Server is active and operational.');
+  res.send('🚀 Stateless GitHub MCP Server is fully responsive.');
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Stateless Lean GitHub MCP Server operational on port ${PORT}`);
 });
-      
+        
