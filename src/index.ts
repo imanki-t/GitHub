@@ -1,6 +1,6 @@
 import express from 'express';
-import { McpServer } from '@modelcontextprotocol/server';
-import { SSEServerTransport } from '@modelcontextprotocol/server/sse';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { Octokit } from '@octokit/rest';
 import { z } from 'zod';
 import dotenv from 'dotenv';
@@ -46,7 +46,7 @@ server.registerTool('search_code', {
 });
 
 /**
- * 2. GET REPO TREE (Essential context for agent mapping)
+ * 2. GET REPO TREE
  */
 server.registerTool('get_repo_tree', {
   owner: z.string(),
@@ -144,7 +144,7 @@ server.registerTool('create_pull_request', {
 });
 
 /**
- * 9. GET COMMIT STATUS (Essential agentic check to track CI/CD status before closing loops)
+ * 9. GET COMMIT STATUS
  */
 server.registerTool('get_commit_status', { owner: z.string(), repo: z.string(), ref: z.string() }, async ({ owner, repo, ref }) => {
   try {
@@ -161,11 +161,9 @@ app.use(express.json());
 
 const activeTransports = new Map<string, SSEServerTransport>();
 
-// Streamable routing initialization
 app.post('/mcp', async (req, res) => {
   const sessionId = Math.random().toString(36).substring(7);
   
-  // Custom multi-user support override via header injection
   const customPat = req.headers['x-github-token'] as string;
   if (customPat) {
     octokit.auth = customPat;
@@ -193,4 +191,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Lean GitHub MCP Server operational on port ${PORT}`);
 });
-  
