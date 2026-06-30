@@ -208,19 +208,16 @@ function createMcpServer(octokitClient: Octokit) {
 const app = express();
 app.use(express.json());
 
-// Main handler matching the /mcp endpoint route
 app.post('/mcp', async (req, res) => {
   try {
-    // Custom multi-user support override headers parsing
     const customPat = req.headers['x-github-token'] as string;
     const activeToken = customPat || DEFAULT_GITHUB_PAT;
     const activeOctokit = new Octokit({ auth: activeToken });
 
-    // Initialize the server scoped to this specific connection token context
     const activeServer = createMcpServer(activeOctokit);
 
-    // Process the JSON-RPC message statelessly and instantly reply to the request response channel
-    const response = await activeServer.handleMessage(req.body);
+    // FIXED: Target the internal protocol router subclass instance (.server)
+    const response = await activeServer.server.handleMessage(req.body);
     res.json(response);
   } catch (error: any) {
     res.status(500).json({
@@ -231,7 +228,6 @@ app.post('/mcp', async (req, res) => {
   }
 });
 
-// Root routing helper to handle quick system validation checks
 app.get('/', (req, res) => {
   res.send('🚀 Stateless GitHub MCP Server is active and operational.');
 });
