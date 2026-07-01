@@ -8,7 +8,7 @@ By filtering the Render integration to only five high-value tools and dynamicall
 
 ## Features
 
-### 1. GitHub Integration (13 Tools)
+### 1. GitHub Integration (14 Tools)
 *   **Repository Access:** `get_viewer`, `list_repos`, `search_repos`, `list_branches`
 *   **File Manipulation:** `get_tree`, `get_contents`, `put_contents`, `patch_contents`, `delete_contents`, `grep_file`
 *   **Git Control:** `create_ref`, `delete_ref`, `search_code`, `create_pull`
