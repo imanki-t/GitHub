@@ -216,24 +216,24 @@ function createMcpServer(octokitClient: Octokit) {
 const app = express();
 app.use(express.json());
 
-// Handshake router utilizing native Streamable SDK logic
-app.post('/mcp', async (req: Request, res: Response): Promise<void> => {
+// FIXED: Using app.all to capture GET, POST, OPTIONS, and DELETE natively
+app.all('/mcp', async (req: Request, res: Response): Promise<void> => {
   try {
     const customPat = req.headers['x-github-token'] as string;
     const activeToken = customPat || DEFAULT_GITHUB_PAT;
     const activeOctokit = new Octokit({ auth: activeToken });
 
-    // 1. Build a isolated per-request server layout
     const activeServer = createMcpServer(activeOctokit);
 
-    // 2. Initialize official stateless streamable transport mechanism
     const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined // Triggers official compliant stateless communication stream
+      sessionIdGenerator: undefined // Stateless mode
     });
 
-    // 3. Connect and execute the native SDK handler pipeline natively
     await activeServer.connect(transport);
-    await transport.handleRequest(req, res);
+    
+    // FIXED: Explicitly pass req.body as the 3rd parameter!
+    // Since express.json() consumed the raw stream, the SDK needs the parsed object directly.
+    await transport.handleRequest(req, res, req.body);
   } catch (error: any) {
     res.status(500).json({
       jsonrpc: '2.0',
@@ -251,4 +251,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Compliant Lean GitHub MCP Server active on port ${PORT}`);
 });
-      
+        
