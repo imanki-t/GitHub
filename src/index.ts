@@ -238,9 +238,20 @@ const app = express();
 app.use(express.json());
 
 app.all('/mcp', async (req: Request, res: Response): Promise<void> => {
-  const clientApiKey = (req.headers['x-api-key'] as string) || req.headers['authorization']?.toString().replace('Bearer ', '');
+  if (!MCP_API_KEY) {
+    res.status(500).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Server configuration error: MCP_API_KEY is not configured on host.' },
+      id: req.body?.id || null
+    });
+    return;
+  }
+
+  const clientApiKey = (req.headers['x-api-key'] as string)
+    || req.headers['authorization']?.toString().replace('Bearer ', '')
+    || (req.query.api_key as string);
   
-  if (MCP_API_KEY && clientApiKey !== MCP_API_KEY) {
+  if (clientApiKey !== MCP_API_KEY) {
     res.status(401).json({
       jsonrpc: '2.0',
       error: { code: -32000, message: 'Unauthorized: Invalid or missing MCP_API_KEY' },
