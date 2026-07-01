@@ -12,7 +12,7 @@ if (!DEFAULT_GITHUB_PAT) {
   console.warn("⚠️ Warning: GITHUB_PAT/GITHUB_PERSONAL_ACCESS_TOKEN env variable is missing.");
 }
 
-// Response Format Helpers
+// Token-saving formatting helpers
 const formatSuccess = (data: any) => ({
   content: [{ type: 'text' as const, text: typeof data === 'string' ? data : JSON.stringify(data, null, 2) }]
 });
@@ -22,33 +22,84 @@ const formatError = (error: any) => ({
   content: [{ type: 'text' as const, text: error?.message || String(error) }]
 });
 
-// Helper function to create the MCP server instance pre-loaded with tools
+// Helper function to create the MCP server instance
 function createMcpServer(octokitClient: Octokit) {
   const server = new McpServer({
     name: 'github-lean-agent',
-    version: '1.0.0',
+    version: '1.1.0', // Bumped version for repo tools
   });
 
-  /** 1. SEARCH CODE */
-  server.registerTool('search_code', { 
-    description: 'Search code snippets inside GitHub repositories',
+  // ==========================================================================
+  // IDENTITY & REPOSITORY CONTEXT TOOLS (New)
+  // ==========================================================================
+
+  /** 1. GET AUTHENTICATED USER */
+  server.registerTool('get_authenticated_user', {
+    description: 'Get the exact GitHub username of the token owner to establish user context.',
+    inputSchema: {} 
+  }, async () => {
+    try {
+      const res = await octokitClient.users.getAuthenticated();
+      return formatSuccess({ username: res.data.login, name: res.data.name });
+    } catch (err) { return formatError(err); }
+  });
+
+  /** 2. LIST USER REPOSITORIES */
+  server.registerTool('list_user_repos', {
+    description: 'List the most recently updated repositories owned by the authenticated user.',
     inputSchema: {
-      q: z.string().describe('Query strings like "functionName repo:owner/repo"') 
+      limit: z.number().optional().default(15).describe('Number of repositories to fetch (keep low to save tokens)')
+    }
+  }, async ({ limit }) => {
+    try {
+      const res = await octokitClient.repos.listForAuthenticatedUser({ sort: 'updated', per_page: limit });
+      return formatSuccess(res.data.map(r => ({ 
+        name: r.name, 
+        full_name: r.full_name, 
+        is_private: r.private, 
+        default_branch: r.default_branch 
+      })));
+    } catch (err) { return formatError(err); }
+  });
+
+  /** 3. LIST REPOSITORY BRANCHES */
+  server.registerTool('list_branches', {
+    description: 'List all existing branches for a specific repository target.',
+    inputSchema: {
+      owner: z.string(),
+      repo: z.string()
+    }
+  }, async ({ owner, repo }) => {
+    try {
+      const res = await octokitClient.repos.listBranches({ owner, repo, per_page: 30 });
+      return formatSuccess(res.data.map(b => ({ branch_name: b.name, latest_sha: b.commit.sha })));
+    } catch (err) { return formatError(err); }
+  });
+
+  // ==========================================================================
+  // CORE FILE SYSTEM TOOLS
+  // ==========================================================================
+
+  /** 4. SEARCH CODE */
+  server.registerTool('search_code', { 
+    description: 'Search code snippets inside GitHub repositories using structural query syntax.',
+    inputSchema: {
+      q: z.string().describe('Query string e.g., "functionName repo:owner/repo"') 
     }
   }, async ({ q }) => {
     try {
       const res = await octokitClient.search.code({ q, per_page: 10 });
-      return formatSuccess(res.data.items.map(i => ({ name: i.name, path: i.path, repo: i.repository.full_name, url: i.html_url })));
+      return formatSuccess(res.data.items.map(i => ({ name: i.name, path: i.path, repo: i.repository.full_name })));
     } catch (err) { return formatError(err); }
   });
 
-  /** 2. GET REPO TREE */
+  /** 5. GET REPO TREE */
   server.registerTool('get_repo_tree', {
-    description: 'Look up the full recursive directory hierarchy map of a repository',
+    description: 'Look up the full recursive directory hierarchy mapping of a repository.',
     inputSchema: {
       owner: z.string(),
       repo: z.string(),
-      tree_sha: z.string().describe('Branch name or commit SHA to map recursively')
+      tree_sha: z.string().describe('Branch name or commit SHA to map')
     }
   }, async ({ owner, repo, tree_sha }) => {
     try {
@@ -57,9 +108,9 @@ function createMcpServer(octokitClient: Octokit) {
     } catch (err) { return formatError(err); }
   });
 
-  /** 3. GET FILE CONTENTS */
+  /** 6. GET FILE CONTENTS */
   server.registerTool('get_file_contents', {
-    description: 'Fetch the raw contents of a specific file',
+    description: 'Fetch the raw string contents of a specific code file.',
     inputSchema: {
       owner: z.string(),
       repo: z.string(),
@@ -72,138 +123,123 @@ function createMcpServer(octokitClient: Octokit) {
       if ('content' in res.data && typeof res.data.content === 'string') {
         return formatSuccess(Buffer.from(res.data.content, 'base64').toString('utf-8'));
       }
-      return formatSuccess(res.data);
+      return formatSuccess('Target is a directory, not a file.');
     } catch (err) { return formatError(err); }
   });
 
-  /** 4. CREATE OR UPDATE FILE */
+  // ==========================================================================
+  // SURGICAL ENGINEERING & MODIFICATION TOOLS
+  // ==========================================================================
+
+  /** 7. CREATE OR UPDATE FILE */
   server.registerTool('create_or_update_file', {
-    description: 'Write, append, or modify code content within a designated file path',
+    description: 'Write complete new files or overwrite existing ones (Use patch_file_contents for partial edits instead to save tokens).',
     inputSchema: {
       owner: z.string(),
       repo: z.string(),
       path: z.string(),
-      content: z.string().describe('Full string value contents of the file'),
-      message: z.string().describe('Commit message statement'),
+      content: z.string(),
+      message: z.string(),
       branch: z.string(),
-      sha: z.string().optional().describe('Crucial if updating an existing file structure')
+      sha: z.string().optional()
     }
   }, async ({ owner, repo, path, content, message, branch, sha }) => {
     try {
       const res = await octokitClient.repos.createOrUpdateFileContents({
         owner, repo, path, message, content: Buffer.from(content).toString('base64'), branch, sha
       });
-      return formatSuccess(`Commit successful. New blob SHA: ${res.data.commit.sha}`);
+      return formatSuccess(`Commit successful. SHA: ${res.data.commit.sha}`);
     } catch (err) { return formatError(err); }
   });
 
-  /** 5. DELETE FILE */
-  server.registerTool('delete_file', {
-    description: 'Remove a file from a branch workspace context completely',
-    inputSchema: {
-      owner: z.string(), 
-      repo: z.string(), 
-      path: z.string(), 
-      message: z.string(), 
-      sha: z.string(), 
-      branch: z.string()
-    }
-  }, async ({ owner, repo, path, message, sha, branch }) => {
-    try {
-      const res = await octokitClient.repos.deleteFile({ owner, repo, path, message, sha, branch });
-      return formatSuccess(`Deleted ${path}. Commit transaction: ${res.data.commit.sha}`);
-    } catch (err) { return formatError(err); }
-  });
-
-  /** 6. CREATE BRANCH */
-  server.registerTool('create_branch', {
-    description: 'Isolate agentic edits by creating a new reference branch off a base SHA',
-    inputSchema: {
-      owner: z.string(), 
-      repo: z.string(), 
-      branch: z.string(), 
-      refSha: z.string().describe('The base target commit SHA hash')
-    }
-  }, async ({ owner, repo, branch, refSha }) => {
-    try {
-      await octokitClient.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: refSha });
-      return formatSuccess(`Branch refs/heads/${branch} created accurately.`);
-    } catch (err) { return formatError(err); }
-  });
-
-  /** 7. DELETE BRANCH */
-  server.registerTool('delete_branch', {
-    description: 'Wipe out an old or merged working branch reference key',
-    inputSchema: {
-      owner: z.string(), 
-      repo: z.string(), 
-      branch: z.string()
-    }
-  }, async ({ owner, repo, branch }) => {
-    try {
-      await octokitClient.git.deleteRef({ owner, repo, ref: `heads/${branch}` });
-      return formatSuccess(`Wiped branch 'heads/${branch}' cleanly.`);
-    } catch (err) { return formatError(err); }
-  });
-
-  /** 8. CREATE PULL REQUEST */
-  server.registerTool('create_pull_request', {
-    description: 'Open a pull request for human review and integration tracking',
-    inputSchema: {
-      owner: z.string(), 
-      repo: z.string(), 
-      title: z.string(), 
-      body: z.string().optional(), 
-      head: z.string(), 
-      base: z.string().default('main')
-    }
-  }, async ({ owner, repo, title, body, head, base }) => {
-    try {
-      const res = await octokitClient.pulls.create({ owner, repo, title, body, head, base });
-      return formatSuccess(`PR open: ${res.data.html_url} [#${res.data.number}]`);
-    } catch (err) { return formatError(err); }
-  });
-
-  /** 9. PATCH FILE CONTENTS (Line-Specific Targeting Optimization) */
+  /** 8. PATCH FILE CONTENTS (The Token Optimizer) */
   server.registerTool('patch_file_contents', {
-    description: 'Surgically update specific lines in a file by replacing a targeted row block without rewriting the whole file.',
+    description: 'Surgically replace specific rows in a file without rewriting the whole document.',
     inputSchema: {
       owner: z.string(),
       repo: z.string(),
       path: z.string(),
       branch: z.string(),
-      startLine: z.number().describe('The 1-indexed starting line number of the block to replace'),
-      endLine: z.number().describe('The 1-indexed ending line number of the block to replace'),
-      newContent: z.string().describe('The replacement string block containing the clean updated code'),
-      message: z.string().describe('Descriptive commit message summary')
+      startLine: z.number().describe('1-indexed starting line number of block to replace'),
+      endLine: z.number().describe('1-indexed ending line number of block to replace'),
+      newContent: z.string().describe('Clean replacement code block'),
+      message: z.string()
     }
   }, async ({ owner, repo, path, branch, startLine, endLine, newContent, message }) => {
     try {
       const fileData = await octokitClient.repos.getContent({ owner, repo, path, ref: branch });
-      if (Array.isArray(fileData.data) || !('content' in fileData.data)) {
-        throw new Error('Target path is not a valid code file.');
-      }
+      if (Array.isArray(fileData.data) || !('content' in fileData.data)) throw new Error('Not a valid file.');
       
       const fileSha = fileData.data.sha;
       const rawText = Buffer.from(fileData.data.content, 'base64').toString('utf-8');
       const lines = rawText.split('\n');
-      
       const zeroIndexedStart = startLine - 1;
-      const zeroIndexedEnd = endLine;
       
-      if (zeroIndexedStart < 0 || zeroIndexedEnd > lines.length || zeroIndexedStart > zeroIndexedEnd) {
-        throw new Error(`Invalid line range bounds. The target file currently has ${lines.length} total lines.`);
+      if (zeroIndexedStart < 0 || endLine > lines.length || zeroIndexedStart > endLine) {
+        throw new Error(`Invalid bounds. File has ${lines.length} lines.`);
       }
 
-      const replacementLines = newContent.split('\n');
-      lines.splice(zeroIndexedStart, zeroIndexedEnd - zeroIndexedStart, ...replacementLines);
-      const updatedText = lines.join('\n');
-
+      lines.splice(zeroIndexedStart, endLine - zeroIndexedStart, ...newContent.split('\n'));
       const res = await octokitClient.repos.createOrUpdateFileContents({
-        owner, repo, path, message, content: Buffer.from(updatedText).toString('base64'), branch, sha: fileSha
+        owner, repo, path, message, content: Buffer.from(lines.join('\n')).toString('base64'), branch, sha: fileSha
       });
+      return formatSuccess(`Lines ${startLine}-${endLine} patched. New SHA: ${res.data.commit.sha}`);
+    } catch (err) { return formatError(err); }
+  });
 
-      return formatSuccess(`Line patch successfully committed to lines ${startLine}-${endLine}. New SHA: ${res.data.commit.sha}`);
+  /** 9. DELETE FILE */
+  server.registerTool('delete_file', {
+    description: 'Remove an obsolete file from a branch workspace.',
+    inputSchema: {
+      owner: z.string(), repo: z.string(), path: z.string(), message: z.string(), sha: z.string(), branch: z.string()
+    }
+  }, async ({ owner, repo, path, message, sha, branch }) => {
+    try {
+      const res = await octokitClient.repos.deleteFile({ owner, repo, path, message, sha, branch });
+      return formatSuccess(`Deleted ${path}.`);
+    } catch (err) { return formatError(err); }
+  });
+
+  // ==========================================================================
+  // VERSION CONTROL & PR PIPELINE TOOLS
+  // ==========================================================================
+
+  /** 10. CREATE BRANCH */
+  server.registerTool('create_branch', {
+    description: 'Create an isolated working branch off a base SHA.',
+    inputSchema: {
+      owner: z.string(), repo: z.string(), branch: z.string(), refSha: z.string()
+    }
+  }, async ({ owner, repo, branch, refSha }) => {
+    try {
+      await octokitClient.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: refSha });
+      return formatSuccess(`Branch refs/heads/${branch} created.`);
+    } catch (err) { return formatError(err); }
+  });
+
+  /** 11. DELETE BRANCH */
+  server.registerTool('delete_branch', {
+    description: 'Wipe an old branch reference.',
+    inputSchema: {
+      owner: z.string(), repo: z.string(), branch: z.string()
+    }
+  }, async ({ owner, repo, branch }) => {
+    try {
+      await octokitClient.git.deleteRef({ owner, repo, ref: `heads/${branch}` });
+      return formatSuccess(`Branch deleted.`);
+    } catch (err) { return formatError(err); }
+  });
+
+  /** 12. CREATE PULL REQUEST */
+  server.registerTool('create_pull_request', {
+    description: 'Open a PR for human review.',
+    inputSchema: {
+      owner: z.string(), repo: z.string(), title: z.string(), body: z.string().optional(), head: z.string(), base: z.string().default('main')
+    }
+  }, async ({ owner, repo, title, body, head, base }) => {
+    try {
+      const res = await octokitClient.pulls.create({ owner, repo, title, body, head, base });
+      return formatSuccess(`PR open: ${res.data.html_url} [#${res.data.number}]`);
     } catch (err) { return formatError(err); }
   });
 
@@ -216,7 +252,6 @@ function createMcpServer(octokitClient: Octokit) {
 const app = express();
 app.use(express.json());
 
-// FIXED: Using app.all to capture GET, POST, OPTIONS, and DELETE natively
 app.all('/mcp', async (req: Request, res: Response): Promise<void> => {
   try {
     const customPat = req.headers['x-github-token'] as string;
@@ -226,13 +261,12 @@ app.all('/mcp', async (req: Request, res: Response): Promise<void> => {
     const activeServer = createMcpServer(activeOctokit);
 
     const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined // Stateless mode
+      sessionIdGenerator: undefined // Enforces stateless mode
     });
 
     await activeServer.connect(transport);
     
-    // FIXED: Explicitly pass req.body as the 3rd parameter!
-    // Since express.json() consumed the raw stream, the SDK needs the parsed object directly.
+    // Explicitly pass pre-parsed req.body to prevent 400 Empty Stream Errors
     await transport.handleRequest(req, res, req.body);
   } catch (error: any) {
     res.status(500).json({
@@ -244,11 +278,11 @@ app.all('/mcp', async (req: Request, res: Response): Promise<void> => {
 });
 
 app.get('/', (req: Request, res: Response) => {
-  res.send('🚀 Stateless GitHub MCP Server is online and compliant.');
+  res.send('🚀 Stateless GitHub Agent Server is fully operational.');
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Compliant Lean GitHub MCP Server active on port ${PORT}`);
+  console.log(`🚀 Compliant Agent Server active on port ${PORT}`);
 });
-        
+             
