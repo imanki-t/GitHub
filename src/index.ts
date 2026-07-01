@@ -502,10 +502,13 @@ function createMcpServer(octokitClient: Octokit, renderToken: string | undefined
   });
 
   server.registerTool('list_logs', {
-    description: 'Get service logs.',
+    description: 'Get service logs matching the provided filters.',
     inputSchema: {
-      serviceId: z.string(),
-      limit: z.number().optional().default(100)
+      resource: z.array(z.string()).describe('Filter logs by their resource (array of strings, required, e.g. ["srv-xxxx"])'),
+      level: z.array(z.string()).optional().describe('Filter logs by their severity level (array of strings, optional)'),
+      type: z.array(z.string()).optional().describe('Filter logs by their type (array of strings, optional)'),
+      instance: z.array(z.string()).optional().describe('Filter logs by the instance they were emitted from (array of strings, optional)'),
+      host: z.array(z.string()).optional().describe('Filter request logs by their host (array of strings, optional)')
     }
   }, async (args) => {
     return callRenderTool('list_logs', args, renderToken);
