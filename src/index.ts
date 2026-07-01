@@ -11,23 +11,6 @@ const DEFAULT_GITHUB_PAT = process.env.GITHUB_PERSONAL_ACCESS_TOKEN || process.e
 const DEFAULT_RENDER_API_KEY = process.env.RENDER_API_KEY || process.env.RENDER_PAT;
 const MCP_API_KEY = process.env.MCP_API_KEY;
 
-const GITHUB_TOOLS = new Set([
-  'get_viewer',
-  'list_repos',
-  'search_repos',
-  'list_branches',
-  'search_code',
-  'grep_file',
-  'get_tree',
-  'get_contents',
-  'put_contents',
-  'patch_contents',
-  'delete_contents',
-  'create_ref',
-  'delete_ref',
-  'create_pull'
-]);
-
 const formatSuccess = (data: any) => ({
   content: [{ type: 'text' as const, text: typeof data === 'string' ? data : JSON.stringify(data) }]
 });
@@ -422,7 +405,7 @@ function createMcpServer(octokitClient: Octokit, renderToken: string | undefined
   return server;
 }
 
-const activeInstances = new Map<string, { server: McpServer; transport: StreamableHTTPServerTransport }>();
+const transports = new Map<string, StreamableHTTPServerTransport>();
 
 const app = express();
 app.use(express.json());
@@ -455,37 +438,48 @@ app.all('/mcp', async (req: Request, res: Response): Promise<void> => {
     || (req.headers['x-render-api-key'] as string)
     || DEFAULT_RENDER_API_KEY;
 
-  const cacheKey = `${githubToken || ''}_${renderToken || ''}`;
-  let instance = activeInstances.get(cacheKey);
+  const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
-  if (!instance) {
-    const octokit = new Octokit({ auth: githubToken || '' });
-    const server = createMcpServer(octokit, renderToken);
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => Math.random().toString(36).substring(2, 15)
-    });
-
+  if (sessionId && transports.has(sessionId)) {
+    const transport = transports.get(sessionId)!;
     try {
-      await server.connect(transport);
-      instance = { server, transport };
-      activeInstances.set(cacheKey, instance);
-    } catch (connectError: any) {
-      res.status(500).json({
-        jsonrpc: '2.0',
-        error: { code: -32603, message: connectError?.message || 'Handshake Error' },
-        id: req.body?.id || null
-      });
-      return;
+      await transport.handleRequest(req, res, req.body);
+    } catch (error: any) {
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: error?.message || 'Request Handling Error' },
+          id: req.body?.id || null
+        });
+      }
     }
+    return;
   }
 
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => Math.random().toString(36).substring(2, 15),
+    onsessioninitialized: (id) => {
+      transports.set(id, transport);
+    }
+  });
+
+  transport.onclose = () => {
+    if (transport.sessionId) {
+      transports.delete(transport.sessionId);
+    }
+  };
+
+  const octokit = new Octokit({ auth: githubToken || '' });
+  const server = createMcpServer(octokit, renderToken);
+
   try {
-    await instance.transport.handleRequest(req, res, req.body);
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
   } catch (error: any) {
     if (!res.headersSent) {
       res.status(500).json({
         jsonrpc: '2.0',
-        error: { code: -32603, message: error?.message || 'Request Handling Error' },
+        error: { code: -32603, message: error?.message || 'Handshake Error' },
         id: req.body?.id || null
       });
     }
