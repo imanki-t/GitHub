@@ -331,6 +331,8 @@ function createMcpServer(octokitClient: Octokit, renderToken: string | undefined
   return server;
 }
 
+const activeInstances = new Map<string, { server: McpServer; transport: StreamableHTTPServerTransport }>();
+
 const app = express();
 app.use(express.json());
 
@@ -362,23 +364,37 @@ app.all('/mcp', async (req: Request, res: Response): Promise<void> => {
     || (req.headers['x-render-api-key'] as string)
     || DEFAULT_RENDER_API_KEY;
 
-  const octokit = new Octokit({ auth: githubToken || '' });
-  const server = createMcpServer(octokit, renderToken);
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined as any });
+  const cacheKey = `${githubToken || ''}_${renderToken || ''}`;
+  let instance = activeInstances.get(cacheKey);
 
-  res.on('close', () => {
-    transport.close().catch(() => {});
-    server.close().catch(() => {});
-  });
+  if (!instance) {
+    const octokit = new Octokit({ auth: githubToken || '' });
+    const server = createMcpServer(octokit, renderToken);
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => Math.random().toString(36).substring(2, 15)
+    });
+
+    try {
+      await server.connect(transport);
+      instance = { server, transport };
+      activeInstances.set(cacheKey, instance);
+    } catch (connectError: any) {
+      res.status(500).json({
+        jsonrpc: '2.0',
+        error: { code: -32603, message: connectError?.message || 'Handshake Error' },
+        id: req.body?.id || null
+      });
+      return;
+    }
+  }
 
   try {
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
+    await instance.transport.handleRequest(req, res, req.body);
   } catch (error: any) {
     if (!res.headersSent) {
       res.status(500).json({
         jsonrpc: '2.0',
-        error: { code: -32603, message: error?.message || 'Handshake Error' },
+        error: { code: -32603, message: error?.message || 'Request Handling Error' },
         id: req.body?.id || null
       });
     }
