@@ -1,0 +1,46 @@
+// Centralized pagination and window limits.
+// Previously these caps were hardcoded per-tool with inconsistent values
+// (some capped at 50, others 100, others 200/250) — keeping them here
+// avoids silent drift between tools.
+export const LIMITS = {
+  REPOS_DEFAULT: 5,
+  REPOS_MAX: 100,
+
+  SEARCH_REPOS_DEFAULT: 5,
+  SEARCH_REPOS_MAX: 50,
+
+  BRANCHES_DEFAULT: 5,
+  BRANCHES_MAX: 50,
+
+  SEARCH_CODE_DEFAULT: 3,
+  SEARCH_CODE_MAX: 20,
+  FRAGMENT_LINES_DEFAULT: 8,
+  FRAGMENT_LINES_MAX: 50,
+
+  GREP_DEFAULT: 15,
+  GREP_MAX: 100,
+  GREP_CONTEXT_MAX: 5,
+  GREP_LINE_PREVIEW_CHARS: 150,
+  GREP_MAX_TEST_CHARS: 4000,
+
+  TREE_DEFAULT: 50,
+  TREE_MAX: 200,
+
+  CONTENTS_DEFAULT: 300,
+  CONTENTS_MAX: 750,
+
+  RENDER_SERVICES_DEFAULT: 3,
+  RENDER_SERVICES_MAX: 50,
+
+  RENDER_DEPLOYS_DEFAULT: 3,
+  RENDER_DEPLOYS_MAX: 50,
+
+  RENDER_LOGS_DEFAULT: 15,
+  RENDER_LOGS_MAX: 250,
+
+  SESSION_IDLE_MS: 15 * 60 * 1000,
+  SWEEP_INTERVAL_MS: 5 * 60 * 1000,
+
+  CLIENT_CACHE_MAX: 25,
+  CLIENT_IDLE_MS: 30 * 60 * 1000,
+} as const;
